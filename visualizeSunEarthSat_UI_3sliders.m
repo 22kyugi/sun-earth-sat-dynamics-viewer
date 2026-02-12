@@ -1,32 +1,33 @@
 function visualizeSunEarthSat_UI_3sliders()
 % Month + Day + Hour sliders
-% Sun-centered (left): Earth orbit + texture + terminator + axis + satellite (scaled)
-% Earth-centered (right): Earth texture + current orbit curve + orbit plane disk + satellite STL model
-% No toolboxes required (uses stlread if available)
+% Left: Sun-centered (Earth orbit + texture + terminator + satellite point)
+% Right: Earth-centered (rotating Earth + orbit curve + orbit plane disk + satellite STL model)
+% Inset zoom: Satellite ONLY (Earth removed) + body triad (XYZ arrows) auto-sized
+% No toolboxes required (includes local STL reader fallback)
 
 %% ===================== User Parameters =====================
 params = struct();
 
 % ---- Year range control: base year = 2000 + n ----
-params.yearOffsetN = 26;                 % n (e.g., 26 -> year 2026)
+params.yearOffsetN = 26;
 params.baseYear    = 2000 + params.yearOffsetN;
 
-% ---- Orbit elements (example; you changed altitude) ----
+% ---- Orbit elements ----
 Re = 6378.137;                           % [km]
 alt_km = 3000;                           % [km]
 params.orbit.a    = Re + alt_km;         % [km]
 params.orbit.e    = 0.001;
 params.orbit.i    = 97.8;                % [deg]
-params.orbit.RAAN = 0;                  % [deg]
+params.orbit.RAAN = 0;                   % [deg]
 params.orbit.argp = 0;                   % [deg]
 params.orbit.M0   = 0;                   % [deg]
-params.orbit.useJ2 = true;               % J2 secular precession (simple)
+params.orbit.useJ2 = true;
 
 % ---- Sun-centered drawing scales ----
 params.AU_scaleDraw = 1;
-params.sunDrawRadius_km   = 20*Re;       % for visibility
-params.earthDrawRadius_km = 3*Re;        % for visibility
-params.satRelScale  = 400;               % display-only scale around Earth in Sun-centered view
+params.sunDrawRadius_km   = 20*Re;
+params.earthDrawRadius_km = 3*Re;
+params.satRelScale  = 400;
 
 % ---- Day/night shading ----
 params.useTexture  = true;
@@ -39,56 +40,75 @@ params.axisLengthFactor = 2.2;
 params.axisColor = [1 1 0];
 params.axisLineWidth = 2.2;
 
-% ---- Satellite STL model (Earth-centered view) ----
+% ---- Satellite STL model ----
 params.useSatModel = true;
-params.satModelFile = "satellite.stl";
+params.satModelFile = "satellite.stl";   % ★カレント/パス上に必要
 params.satModelUnit = "mm";              % "mm" / "m" / "km"
-params.satModelDesiredSize_km = 6000;     % ★大きすぎ注意：50〜200 km推奨（軌道表示を邪魔しない）
-params.satEuler_deg = [140 330 90];      % fixed attitude [x y z] deg
-params.satEulerOrder = "XYZ";            % "XYZ" or "ZYX"
-params.satSpinRPM = 0;                   % optional spin about body Z
+params.satEuler_deg = [140 330 90];
+params.satEulerOrder = "XYZ";
+params.satSpinRPM = 0;
+
+% ---- Model sizes (display only) ----
+% 右図メインの見え方はここで調整（大きすぎると地球を覆います）
+params.satModelDesiredSize_km_main  = 4000;      % right main
+params.satModelDesiredSize_km_inset = 25000;     % inset zoom
+
+% ---- Time step (Hour slider quantization) ----
+params.timeStepMin = 5;   % 1/5/10 ... minutes
+
+% ---- Inset (zoom) settings ----
+params.useInsetZoom = true;
+params.insetSizeFactor = 0.20;
+params.insetMargin = 0.003;
+params.insetHalfWidth_km = 20000;     % インセット表示範囲: 衛星中心±dz
 
 % ---- Colors ----
 params.sunlitColor  = [1 0.2 0.2];
 params.eclipseColor = [0.4 0.4 0.4];
 params.planeColor   = [0.2 0.8 0.2];
+params.fallbackMarkerColor = [0.1 0.1 0.1]; % STLが読めない時の点（黒系）
+
+% ---- Inset triad (XYZ arrows) ----
+params.showInsetTriad = true;
+
+% triadLength_km は「上限」として扱い、実際の長さは dz に応じて自動制限します
+params.triadLength_km = 8000;      % 上限（km）
+params.triadAutoFrac  = 0.35;      % L = triadAutoFrac * dz（dz= insetHalfWidth_km）
+params.triadLineWidth = 2.0;
+
+% ラベルも追従表示したい場合
+params.showTriadLabels = true;
 
 %% ===================== Constants =====================
 muEarth = 398600.4418;                   % [km^3/s^2]
 AU_km   = 149597870.7;                   % [km]
 
-% A rough axis limit for Earth-centered view (based on apogee)
 a = params.orbit.a; e = params.orbit.e;
 rapo = a*(1+e);
-lim2 = 1.25 * rapo;                      % [km] axis limit
-RdiskDefault = 0.95 * lim2;              % orbit plane disk radius
+lim2 = 1.25 * rapo;
+RdiskDefault = 0.95 * lim2;
 
-%% ===================== Time grid: months (main slider) =====================
+%% ===================== Time grid: months =====================
 t0 = datetime(params.baseYear,1,1,0,0,0,'TimeZone','UTC');
-monthTimes = t0 + calmonths(0:12);        % 13 points: Jan..next Jan
+monthTimes = t0 + calmonths(0:12);
 Nmonths = numel(monthTimes);
 
-%% ===================== Seasonal markers (equinox/solstice) =====================
-% Approximate UTC dates for equinoxes/solstices (visualization purpose)
-% If you need exact times, we can replace these with higher-precision ephemeris later.
+%% ===================== Seasonal markers =====================
 seasonNames = ["春分","夏至","秋分","冬至"];
 seasonDates = [ datetime(params.baseYear,3,20,0,0,0,'TimeZone','UTC')
                 datetime(params.baseYear,6,21,0,0,0,'TimeZone','UTC')
                 datetime(params.baseYear,9,23,0,0,0,'TimeZone','UTC')
                 datetime(params.baseYear,12,21,0,0,0,'TimeZone','UTC') ];
 
-%% ===================== Earth orbit curve for left view (1 year) =====================
-% Create a smooth Earth orbit track from Jan 1 to next Jan 1 (UTC)
-orbitTimes = t0 + days(0:1:365);             % 1日刻み（軽い）
-% もっと滑らかにしたいなら例：orbitTimes = t0 + hours(0:6:365*24);
-
+%% ===================== Earth orbit curve (left view) =====================
+orbitTimes = t0 + days(0:1:365);
 rEarthOrbit = zeros(numel(orbitTimes),3);
 for kk = 1:numel(orbitTimes)
-    sHat = sunVectorECI_unit(orbitTimes(kk));              % Earth->Sun unit
-    rEarthOrbit(kk,:) = params.AU_scaleDraw * AU_km * (-sHat.'); % Sun->Earth position [km]
+    sHat = sunVectorECI_unit(orbitTimes(kk));
+    rEarthOrbit(kk,:) = params.AU_scaleDraw * AU_km * (-sHat.');
 end
 
-%% ===================== Earth texture mesh (lat-lon) =====================
+%% ===================== Earth texture mesh =====================
 [texRGB, lonVec, latVec] = builtInEarthTextureRGB();
 [Lon, Lat] = meshgrid(lonVec, latVec);
 X0 = cos(Lat).*cos(Lon);
@@ -98,71 +118,50 @@ earthUnit = cat(3, X0, Y0, Z0);
 
 %% ===================== Figure & Axes =====================
 fig = figure('Color','w'); clf(fig);
-% tiledlayout(fig,1,2,'Padding','compact','TileSpacing','compact');
 tl = tiledlayout(fig,1,2,'Padding','compact','TileSpacing','compact');
 tl.Units = 'normalized';
-tl.Position = [0.00 0.185 1.00 0.78];   % 下16%をUI用に確保（必要なら0.18等に）
+tl.Position = [0.00 0.185 1.00 0.78];
 
 % ---- Left: Sun-centered ----
 ax1 = nexttile(1); hold(ax1,'on'); grid(ax1,'on'); axis(ax1,'equal');
 xlabel(ax1,'X [km]'); ylabel(ax1,'Y [km]'); zlabel(ax1,'Z [km]');
 title(ax1,'Sun-centered (season)');
 
-% Sun sphere
 drawSphere(ax1, [0 0 0], params.sunDrawRadius_km, [1.0 0.85 0.2], 1.0);
-
-% --- ADD: Sun marker point (orange) ---
-sunPt = plot3(ax1, 0,0,0, 'o', ...
-    'MarkerSize', 8, 'MarkerFaceColor', [1.0 0.55 0.0], 'MarkerEdgeColor','k');
+plot3(ax1, 0,0,0, 'o', 'MarkerSize',8, 'MarkerFaceColor',[1.0 0.55 0.0], 'MarkerEdgeColor','k');
 text(ax1, 0,0,0, '  Sun', 'Color',[1.0 0.45 0.0], 'FontWeight','bold');
 
-% --- Earth orbit track (1 year) on Sun-centered view ---
-earthOrbitLine = plot3(ax1, rEarthOrbit(:,1), rEarthOrbit(:,2), rEarthOrbit(:,3), ...
+plot3(ax1, rEarthOrbit(:,1), rEarthOrbit(:,2), rEarthOrbit(:,3), ...
     '-', 'Color',[0.2 0.4 1.0], 'LineWidth',1.5);
 
-% --- Earth current position marker (blue) ---
 earthPosMarker = plot3(ax1, nan, nan, nan, 'o', ...
-    'MarkerSize', 7, ...
-    'MarkerFaceColor', [0.2 0.4 1.0], ...
-    'MarkerEdgeColor', 'k');
+    'MarkerSize',7, 'MarkerFaceColor',[0.2 0.4 1.0], 'MarkerEdgeColor','k');
 
-% --- Seasonal points on Earth orbit (Sun-centered view) ---
 seasonPos = zeros(numel(seasonDates),3);
 for ii = 1:numel(seasonDates)
-    sHat = sunVectorECI_unit(seasonDates(ii));                 % Earth->Sun unit
-    seasonPos(ii,:) = params.AU_scaleDraw * AU_km * (-sHat.'); % Sun->Earth position
+    sHat = sunVectorECI_unit(seasonDates(ii));
+    seasonPos(ii,:) = params.AU_scaleDraw * AU_km * (-sHat.');
 end
 
-% Marker style
-seasonColors = [0.10 0.80 0.10;   % 春分: green
-                1.00 0.60 0.00;   % 夏至: orange
-                0.20 0.60 1.00;   % 秋分: blue
-                0.70 0.30 1.00];  % 冬至: purple
+seasonColors = [0.10 0.80 0.10;
+                1.00 0.60 0.00;
+                0.20 0.60 1.00;
+                0.70 0.30 1.00];
 
 for ii = 1:numel(seasonNames)
     plot3(ax1, seasonPos(ii,1), seasonPos(ii,2), seasonPos(ii,3), ...
-        'o', 'MarkerSize',7, 'MarkerFaceColor',seasonColors(ii,:), ...
-        'MarkerEdgeColor','k');
-    
-    % label (slightly offset outward)
-    offset = 0.2*AU_km*params.AU_scaleDraw * unitVec(seasonPos(ii,:)); % 3% of AU
+        'o', 'MarkerSize',7, 'MarkerFaceColor',seasonColors(ii,:), 'MarkerEdgeColor','k');
+    offset = 0.2*AU_km*params.AU_scaleDraw * unitVec(seasonPos(ii,:));
     text(ax1, seasonPos(ii,1)+offset(1), seasonPos(ii,2)+offset(2), seasonPos(ii,3)+offset(3), ...
         sprintf('%s\n%s', seasonNames(ii), datestr(seasonDates(ii),'mm/dd')), ...
-        'FontWeight','bold', 'Color',seasonColors(ii,:), ...
-        'HorizontalAlignment','center');
+        'FontWeight','bold', 'Color',seasonColors(ii,:), 'HorizontalAlignment','center');
 end
-
-% optional: show start point marker
-plot3(ax1, rEarthOrbit(1,1), rEarthOrbit(1,2), rEarthOrbit(1,3), ...
-    'o', 'Color',[0.2 0.4 1.0], 'MarkerFaceColor',[0.2 0.4 1.0], 'MarkerSize',5);
 
 earthSurf = surf(ax1, nan(size(X0)), nan(size(Y0)), nan(size(Z0)), ...
     texRGB, 'EdgeColor','none', 'FaceColor','texturemap', 'FaceAlpha',0.99);
-
 termLine = plot3(ax1, nan, nan, nan, '-', 'Color',[1 1 1]*0.1, 'LineWidth',1.2);
 meriLine = plot3(ax1, nan, nan, nan, '-', 'Color',[1 1 1]*0.95, 'LineWidth',1.2);
-
-earthAxis1 = plot3(ax1, nan, nan, nan, '-', 'Color', params.axisColor, 'LineWidth', params.axisLineWidth);
+earthAxis1 = plot3(ax1, nan, nan, nan, '-', 'Color',params.axisColor, 'LineWidth',params.axisLineWidth);
 
 satPt1 = plot3(ax1, nan, nan, nan, 'o', ...
     'MarkerFaceColor',params.sunlitColor,'MarkerEdgeColor','k','MarkerSize',6);
@@ -175,12 +174,6 @@ lim1 = 1.2*AU_km*params.AU_scaleDraw;
 xlim(ax1, [-lim1 lim1]); ylim(ax1, [-lim1 lim1]); zlim(ax1, [-lim1 lim1]);
 view(ax1, 35, 20);
 
-% --- ADD: store camera parameters for Earth-follow ---
-camtarget(ax1, [0 0 0]);                       % 初期ターゲットを明示
-camOffset1 = campos(ax1) - camtarget(ax1);     % targetからの相対位置
-camUp1     = camup(ax1);
-camVa1     = camva(ax1);
-
 info1 = text(ax1, 0.02, 0.98, '', 'Units','normalized', ...
     'HorizontalAlignment','left','VerticalAlignment','top','FontWeight','bold');
 
@@ -189,53 +182,112 @@ ax2 = nexttile(2); hold(ax2,'on'); grid(ax2,'on'); axis(ax2,'equal');
 xlabel(ax2,'ECI X [km]'); ylabel(ax2,'ECI Y [km]'); zlabel(ax2,'ECI Z [km]');
 title(ax2,'Earth-centered (orbit & satellite)');
 
-% Earth sphere first (so plane can be placed above it)
-earthSurf2 = surf(ax2, Re*X0, Re*Y0, Re*Z0, texRGB, ...
-    'EdgeColor','none','FaceColor','texturemap','FaceAlpha',0.97);
-light(ax2); lighting(ax2,'gouraud');
+% ===== Inset axes: Satellite ONLY =====
+ax2Inset = [];
+hSatXformInset = [];
+satPtInset = [];
 
-% Earth axis (yellow)
-if params.showEarthAxis
-    L2 = params.axisLengthFactor * Re;
-    plot3(ax2, [0 0],[0 0],[-L2 L2], '-', 'Color', params.axisColor, 'LineWidth', params.axisLineWidth);
+% ---- Inset triad handles (created AFTER ax2Inset is created) ----
+qX = []; qY = []; qZ = [];
+tX = []; tY = []; tZ = [];  % optional labels
+
+if params.useInsetZoom
+    pos2 = get(ax2,'Position');
+    f = params.insetSizeFactor;
+    insetW = pos2(3) * f;
+    insetH = pos2(4) * f;
+    insetX = pos2(1) + pos2(3) - insetW - params.insetMargin;
+    insetY = pos2(2) + pos2(4) - insetH - params.insetMargin;
+
+    ax2Inset = axes('Parent',fig,'Units','normalized', ...
+        'Position',[insetX insetY insetW insetH]);
+    hold(ax2Inset,'on'); axis(ax2Inset,'equal');
+    box(ax2Inset,'on');
+    set(ax2Inset,'FontSize',8, 'Color','w');
+    title(ax2Inset,'Zoom (Satellite)','FontWeight','bold','FontSize',9);
+    grid(ax2Inset,'on');
+    view(ax2Inset, 35, 20);
+
+    % --- Create triad only after ax2Inset exists ---
+    if params.showInsetTriad
+        qX = quiver3(ax2Inset, 0,0,0, 0,0,0, 0, 'Color',[1 0 0], ...
+            'LineWidth', params.triadLineWidth, 'MaxHeadSize',0.8);
+        qY = quiver3(ax2Inset, 0,0,0, 0,0,0, 0, 'Color',[0 0.7 0], ...
+            'LineWidth', params.triadLineWidth, 'MaxHeadSize',0.8);
+        qZ = quiver3(ax2Inset, 0,0,0, 0,0,0, 0, 'Color',[0 0.4 1], ...
+            'LineWidth', params.triadLineWidth, 'MaxHeadSize',0.8);
+
+        if params.showTriadLabels
+            tX = text(ax2Inset, 0,0,0, ' X', 'Color',[1 0 0], 'FontWeight','bold', 'FontSize',9);
+            tY = text(ax2Inset, 0,0,0, ' Y', 'Color',[0 0.7 0], 'FontWeight','bold', 'FontSize',9);
+            tZ = text(ax2Inset, 0,0,0, ' Z', 'Color',[0 0.4 1], 'FontWeight','bold', 'FontSize',9);
+        end
+    end
 end
 
-% Orbit plane (disk) and normal arrow
+% Earth sphere (Earth-centered) - updated each frame for rotation
+earthSurf2 = surf(ax2, nan(size(X0)), nan(size(Y0)), nan(size(Z0)), texRGB, ...
+    'EdgeColor','none','FaceColor','texturemap','FaceAlpha',0.97);
+light(ax2); lighting(ax2,'gouraud');
+camlight(ax2,'headlight');
+
+% Earth axis
+if params.showEarthAxis
+    L2 = params.axisLengthFactor * Re;
+    plot3(ax2, [0 0],[0 0],[-L2 L2], '-', 'Color',params.axisColor, 'LineWidth',params.axisLineWidth);
+end
+
+% Orbit plane disk + normal
 planeDisk = patch(ax2, nan, nan, nan, params.planeColor, ...
     'FaceAlpha',0.18, 'EdgeColor','none', 'FaceLighting','none');
 planeNormalArrow = quiver3(ax2, 0,0,0, 0,0,0, 0, ...
     'Color',[0.1 0.6 0.1], 'LineWidth',2, 'MaxHeadSize',0.8);
 
-% Current orbit curve
+% Orbit curve
 nuVec = linspace(0,2*pi,360);
 orbitLine = plot3(ax2, nan, nan, nan, '-', 'Color',[0.05 0.05 0.05], 'LineWidth',1.3);
 
-% Satellite model (STL) or fallback point
+% Satellite (main + inset)
 hSatXform = [];
-satPt2 = [];
+hSatPatchMain = [];
+satPt2 = [];        % fallback marker
+satModelOK = false;
+
 if params.useSatModel
-    [ok, F, V] = tryLoadSTL(params.satModelFile);
+    [ok, F, V] = tryLoadSTL_any(params.satModelFile);
     if ok
+        satModelOK = true;
         V = normalizeModelUnitsAndCenter(V, params.satModelUnit);
-
         bbox = max(V,[],1) - min(V,[],1);
-        sAuto = params.satModelDesiredSize_km / max(bbox);
-        V = V * sAuto;
+        scaleDen = max(bbox);
 
+        % main model
+        Vmain = V * (params.satModelDesiredSize_km_main / scaleDen);
         hSatXform = hgtransform('Parent', ax2);
-        patch('Faces', F, 'Vertices', V, ...
-            'FaceColor', [0.85 0.85 0.90], 'EdgeColor', 'none', ...
+        hSatPatchMain = patch('Faces', F, 'Vertices', Vmain, ...
+            'FaceColor',[0.85 0.85 0.90], 'EdgeColor','none', ...
             'FaceLighting','gouraud', 'AmbientStrength',0.35, ...
             'FaceAlpha',1.0, 'Parent', hSatXform);
 
-        camlight(ax2,'headlight'); lighting(ax2,'gouraud');
+        % inset model
+        if params.useInsetZoom && ~isempty(ax2Inset) && isvalid(ax2Inset)
+            Vin = V * (params.satModelDesiredSize_km_inset / scaleDen);
+            hSatXformInset = hgtransform('Parent', ax2Inset);
+            patch('Faces', F, 'Vertices', Vin, ...
+                'FaceColor',[0.90 0.90 0.95], 'EdgeColor','none', ...
+                'FaceLighting','gouraud', 'AmbientStrength',0.40, ...
+                'FaceAlpha',1.0, 'Parent', hSatXformInset);
+            camlight(ax2Inset,'headlight'); lighting(ax2Inset,'gouraud');
+        end
     else
-        warning("STLが読み込めなかったため、点表示にフォールバックします。");
-        params.useSatModel = false;
-        satPt2 = plot3(ax2, 0,0,0, 'o','MarkerFaceColor',params.sunlitColor,'MarkerEdgeColor','k','MarkerSize',6);
+        warning("STLが読み込めなかったため、点表示になります（ファイル/パスを確認）。");
     end
-else
-    satPt2 = plot3(ax2, 0,0,0, 'o','MarkerFaceColor',params.sunlitColor,'MarkerEdgeColor','k','MarkerSize',6);
+end
+
+% Fallback marker ONLY if STL failed
+if ~satModelOK
+    satPt2 = plot3(ax2, nan,nan,nan, 'o', ...
+        'MarkerFaceColor',params.fallbackMarkerColor,'MarkerEdgeColor','k','MarkerSize',6);
 end
 
 % Axis limits
@@ -245,60 +297,50 @@ view(ax2, 35, 20);
 info2 = text(ax2, 0.02, 0.98, '', 'Units','normalized', ...
     'HorizontalAlignment','left','VerticalAlignment','top','FontWeight','bold');
 
-% Ensure visibility layering
-uistack(planeDisk,'top');
-uistack(planeNormalArrow,'top');
-uistack(orbitLine,'top');
-
-% ===== UI panel (reserved area at bottom) =====
+%% ===== UI panel =====
 uiPanel = uipanel('Parent',fig, 'Units','normalized', ...
-    'Position',[0.00 0.00 1.00 0.16], ...   % tl.Position の下端と合わせる
+    'Position',[0.00 0.00 1.00 0.16], ...
     'BorderType','none', 'BackgroundColor','w');
 
-%% ===================== UI controls (month + day + hour) =====================
-% ---- Month ----
+% ---- Month (TOP) ----
 sldMonth = uicontrol('Parent',uiPanel,'Style','slider','Units','normalized', ...
-    'Position',[0.08 0.10 0.52 0.22], 'Min',1,'Max',Nmonths,'Value',1, ...
+    'Position',[0.08 0.70 0.52 0.22], 'Min',1,'Max',Nmonths,'Value',1, ...
     'SliderStep',[1/(Nmonths-1) 1/(Nmonths-1)]);
 txtMonth = uicontrol('Parent',uiPanel,'Style','text','Units','normalized', ...
-    'Position',[0.61 0.08 0.16 0.26], 'String','', 'BackgroundColor','w', ...
+    'Position',[0.61 0.68 0.16 0.26], 'String','', 'BackgroundColor','w', ...
     'HorizontalAlignment','left','FontWeight','bold');
 
-% ---- Day ----
+% ---- Day (MIDDLE) ----
 sldDay = uicontrol('Parent',uiPanel,'Style','slider','Units','normalized', ...
     'Position',[0.08 0.40 0.52 0.22], 'Min',1,'Max',31,'Value',1);
 txtDay = uicontrol('Parent',uiPanel,'Style','text','Units','normalized', ...
     'Position',[0.61 0.38 0.16 0.26], 'String','', 'BackgroundColor','w', ...
     'HorizontalAlignment','left','FontWeight','bold');
 
-% ---- Hour ----
+% ---- Hour (BOTTOM) ----
 sldHour = uicontrol('Parent',uiPanel,'Style','slider','Units','normalized', ...
-    'Position',[0.08 0.70 0.52 0.22], 'Min',0,'Max',24,'Value',12);
+    'Position',[0.08 0.10 0.52 0.22], 'Min',0,'Max',24,'Value',12);
 txtHour = uicontrol('Parent',uiPanel,'Style','text','Units','normalized', ...
-    'Position',[0.61 0.68 0.16 0.26], 'String','', 'BackgroundColor','w', ...
+    'Position',[0.61 0.08 0.16 0.26], 'String','', 'BackgroundColor','w', ...
     'HorizontalAlignment','left','FontWeight','bold');
 
 sldMonth.Callback = @(~,~) updateFromUI();
 sldDay.Callback   = @(~,~) updateFromUI();
 sldHour.Callback  = @(~,~) updateFromUI();
 
-% Initial update
 updateFromUI();
 
 %% ===================== Nested: Update from UI =====================
 function updateFromUI()
-    % Month index
     kMonth = round(sldMonth.Value);
     kMonth = max(1,min(Nmonths,kMonth));
     sldMonth.Value = kMonth;
 
     baseMonthTime = monthTimes(kMonth);      % UTC, 1st day 00:00
 
-    % days in selected month
     y = year(baseMonthTime); m = month(baseMonthTime);
     daysInMonth = eomday(y,m);
 
-    % Update day slider range
     sldDay.Min = 1; sldDay.Max = daysInMonth;
     sldDay.SliderStep = [1/max(1,daysInMonth-1) 7/max(1,daysInMonth-1)];
 
@@ -306,10 +348,12 @@ function updateFromUI()
     dayVal = max(1,min(daysInMonth,dayVal));
     sldDay.Value = dayVal;
 
-    % Hour slider
-    sldHour.SliderStep = [1/24 6/24];
-    hourVal = sldHour.Value;
-    hourVal = max(0,min(24,hourVal));
+    stepHour = params.timeStepMin / 60;
+    sldHour.SliderStep = [stepHour/24 min(1,(5*stepHour)/24)];
+
+    hourVal = max(0, min(24, sldHour.Value));
+    hourVal = round(hourVal / stepHour) * stepHour;
+    hourVal = max(0, min(24, hourVal));
     sldHour.Value = hourVal;
 
     dtNow = baseMonthTime + days(dayVal-1) + hours(hourVal);
@@ -321,33 +365,27 @@ function updateFromUI()
     updateSceneAtTime(dtNow);
 end
 
-%% ===================== Nested: Main scene update (1 argument only) =====================
+%% ===================== Nested: Main scene update =====================
 function updateSceneAtTime(dtNowUTC)
     % Sun direction and Earth position
-    sHat = sunVectorECI_unit(dtNowUTC);    % Earth->Sun
-    shat = sHat(:);                        % 3x1
-    rEarthSun = params.AU_scaleDraw * AU_km * (-shat.');  % Sun->Earth (1x3)
+    sHat = sunVectorECI_unit(dtNowUTC);
+    shat = sHat(:);
+    rEarthSun = params.AU_scaleDraw * AU_km * (-shat.');
     C = rEarthSun;
 
-    % --- Update Earth position marker (blue) ---
-    set(earthPosMarker, 'XData', C(1), 'YData', C(2), 'ZData', C(3));
+    set(earthPosMarker, 'XData',C(1), 'YData',C(2), 'ZData',C(3));
 
-    % Earth rotation (GMST)
     theta = gmstRad(dtNowUTC);
-
-    % Rotate Earth texture mesh about Z
     Rz = rot3(theta);
     P = earthUnit;
     Xr = Rz(1,1)*P(:,:,1) + Rz(1,2)*P(:,:,2) + Rz(1,3)*P(:,:,3);
     Yr = Rz(2,1)*P(:,:,1) + Rz(2,2)*P(:,:,2) + Rz(2,3)*P(:,:,3);
     Zr = Rz(3,1)*P(:,:,1) + Rz(3,2)*P(:,:,2) + Rz(3,3)*P(:,:,3);
 
-    % Sun-centered Earth mesh position
     Xd = C(1) + params.earthDrawRadius_km * Xr;
     Yd = C(2) + params.earthDrawRadius_km * Yr;
     Zd = C(3) + params.earthDrawRadius_km * Zr;
 
-    % Day/night shading
     illum = max(0, Xr*shat(1) + Yr*shat(2) + Zr*shat(3));
     illum = illum.^params.gamma;
     shade = params.nightFactor + (1-params.nightFactor)*illum;
@@ -359,19 +397,18 @@ function updateSceneAtTime(dtNowUTC)
     end
     set(earthSurf, 'XData',Xd, 'YData',Yd, 'ZData',Zd, 'CData',CData_shaded);
 
-    % Earth-centered shading
-    shade2 = params.nightFactor + (1-params.nightFactor)* ...
-        (max(0, X0*shat(1) + Y0*shat(2) + Z0*shat(3)).^params.gamma);
-    set(earthSurf2, 'CData', texRGB .* shade2);
+    Xe = Re * Xr;  Ye = Re * Yr;  Ze = Re * Zr;
+    illum2 = max(0, Xr*shat(1) + Yr*shat(2) + Zr*shat(3));
+    illum2 = illum2.^params.gamma;
+    shade2 = params.nightFactor + (1-params.nightFactor)*illum2;
+    set(earthSurf2, 'XData',Xe, 'YData',Ye, 'ZData',Ze, 'CData', texRGB .* shade2);
 
-    % Terminator and meridian lines (Sun-centered)
     [xt, yt, zt] = terminatorCircle(shat, params.earthDrawRadius_km);
-    set(termLine, 'XData', C(1)+xt, 'YData', C(2)+yt, 'ZData', C(3)+zt, 'Visible','on');
+    set(termLine, 'XData',C(1)+xt, 'YData',C(2)+yt, 'ZData',C(3)+zt, 'Visible','on');
 
     [xm, ym, zm] = primeMeridianLine(theta, params.earthDrawRadius_km);
-    set(meriLine, 'XData', C(1)+xm, 'YData', C(2)+ym, 'ZData', C(3)+zm, 'Visible','on');
+    set(meriLine, 'XData',C(1)+xm, 'YData',C(2)+ym, 'ZData',C(3)+zm, 'Visible','on');
 
-    % Earth axis in Sun-centered view
     if params.showEarthAxis
         L1 = params.axisLengthFactor * params.earthDrawRadius_km;
         set(earthAxis1,'XData',[C(1) C(1)],'YData',[C(2) C(2)],'ZData',[C(3)-L1 C(3)+L1], 'Visible','on');
@@ -379,15 +416,13 @@ function updateSceneAtTime(dtNowUTC)
         set(earthAxis1,'Visible','off');
     end
 
-    % Sunlight arrow (Sun -> Earth)
     eHat = unitVec(C);
-    set(sunArrow, 'UData', Larrow*eHat(1), 'VData', Larrow*eHat(2), 'WData', Larrow*eHat(3));
+    set(sunArrow, 'UData',Larrow*eHat(1), 'VData',Larrow*eHat(2), 'WData',Larrow*eHat(3));
 
-    % --- Satellite state (Earth-centered) ---
+    % Satellite
     tSec = seconds(dtNowUTC - t0);
-    [rSat, ~] = keplerPropECI(params.orbit, tSec, muEarth);    % 1x3
+    [rSat, ~] = keplerPropECI(params.orbit, tSec, muEarth);
 
-    % Eclipse check (simple cylindrical)
     behind = dot(rSat(:), shat) < 0;
     dperp  = norm(cross(rSat(:), shat));
     inShadow = behind && (dperp < Re);
@@ -398,12 +433,11 @@ function updateSceneAtTime(dtNowUTC)
         cSat = params.sunlitColor;  stateStr = "SUNLIT";
     end
 
-    % Sun-centered satellite point (scaled)
     rSatSun_draw = C + params.satRelScale * rSat;
-    set(satPt1, 'XData', rSatSun_draw(1), 'YData', rSatSun_draw(2), 'ZData', rSatSun_draw(3), ...
+    set(satPt1, 'XData',rSatSun_draw(1), 'YData',rSatSun_draw(2), 'ZData',rSatSun_draw(3), ...
         'MarkerFaceColor', cSat);
 
-    % Earth-centered satellite: pose update
+    % Attitude
     Rfixed = euler_to_R(params.satEuler_deg, params.satEulerOrder);
     omega = 2*pi*(params.satSpinRPM/60);
     Rspin = rot3(omega*tSec);
@@ -413,37 +447,87 @@ function updateSceneAtTime(dtNowUTC)
     T(1:3,1:3) = Rbody;
     T(1:3,4)   = rSat(:);
 
-    if params.useSatModel && ~isempty(hSatXform) && isvalid(hSatXform)
-        set(hSatXform, 'Matrix', T);
-    else
-        if isempty(satPt2) || ~isvalid(satPt2)
-            satPt2 = plot3(ax2, rSat(1),rSat(2),rSat(3), 'o', ...
-                'MarkerFaceColor',cSat,'MarkerEdgeColor','k','MarkerSize',6);
-        else
-            set(satPt2, 'XData', rSat(1), 'YData', rSat(2), 'ZData', rSat(3), 'MarkerFaceColor', cSat);
+    % ===== Inset triad update (AUTO LENGTH) =====
+    if params.useInsetZoom && params.showInsetTriad && ~isempty(ax2Inset) && isvalid(ax2Inset) ...
+            && ~isempty(qX) && isvalid(qX)
+
+        dz = params.insetHalfWidth_km;
+        Lauto = params.triadAutoFrac * dz;
+        L = min(params.triadLength_km, Lauto);     % 上限＆自動制限
+        L = max(L, 0.05*dz);                       % 小さすぎる場合の下限（見えるように）
+
+        ex = Rbody(:,1) * L;
+        ey = Rbody(:,2) * L;
+        ez = Rbody(:,3) * L;
+
+        set(qX, 'XData',rSat(1), 'YData',rSat(2), 'ZData',rSat(3), ...
+                'UData',ex(1),  'VData',ex(2),  'WData',ex(3));
+        set(qY, 'XData',rSat(1), 'YData',rSat(2), 'ZData',rSat(3), ...
+                'UData',ey(1),  'VData',ey(2),  'WData',ey(3));
+        set(qZ, 'XData',rSat(1), 'YData',rSat(2), 'ZData',rSat(3), ...
+                'UData',ez(1),  'VData',ez(2),  'WData',ez(3));
+
+        uistack(qX,'top'); uistack(qY,'top'); uistack(qZ,'top');
+
+        % labels at arrow tips (optional)
+        if params.showTriadLabels && ~isempty(tX) && isvalid(tX)
+            set(tX, 'Position', (rSat(:) + ex).');
+            set(tY, 'Position', (rSat(:) + ey).');
+            set(tZ, 'Position', (rSat(:) + ez).');
+            uistack(tX,'top'); uistack(tY,'top'); uistack(tZ,'top');
         end
     end
 
-    % Current orbit curve (osculating plane via J2-updated elements)
+    % Main model update
+    if params.useSatModel && ~isempty(hSatXform) && isvalid(hSatXform)
+        set(hSatXform, 'Matrix', T);
+    end
+
+    % Fallback marker update (only if STL failed)
+    if ~isempty(satPt2) && isvalid(satPt2)
+        set(satPt2, 'XData',rSat(1), 'YData',rSat(2), 'ZData',rSat(3));
+    end
+
+    % Inset: satellite only (pose)
+    if params.useInsetZoom && ~isempty(ax2Inset) && isvalid(ax2Inset)
+        if params.useSatModel && ~isempty(hSatXformInset) && isvalid(hSatXformInset)
+            set(hSatXformInset,'Matrix', T);
+        else
+            if isempty(satPtInset) || ~isvalid(satPtInset)
+                satPtInset = plot3(ax2Inset, rSat(1),rSat(2),rSat(3), 'o', ...
+                    'MarkerFaceColor',params.fallbackMarkerColor,'MarkerEdgeColor','k','MarkerSize',6);
+            else
+                set(satPtInset,'XData',rSat(1),'YData',rSat(2),'ZData',rSat(3));
+            end
+        end
+
+        dz = params.insetHalfWidth_km;
+        xlim(ax2Inset, rSat(1) + [-dz dz]);
+        ylim(ax2Inset, rSat(2) + [-dz dz]);
+        zlim(ax2Inset, rSat(3) + [-dz dz]);
+        view(ax2Inset, 35, 20);
+    end
+
+    % Orbit overlays
     orbNow = elementsAtTime(params.orbit, tSec, muEarth);
     [xo, yo, zo] = orbitCurveFromElements(orbNow, nuVec);
-    set(orbitLine, 'XData', xo, 'YData', yo, 'ZData', zo);
+    set(orbitLine, 'XData',xo, 'YData',yo, 'ZData',zo);
 
-    % Orbit plane disk + normal
-    nhat = orbitNormalFromElements(orbNow);               % 3x1
+    nhat = orbitNormalFromElements(orbNow);
     Rdisk = RdiskDefault;
     [px, py, pz] = diskInPlane(nhat, Rdisk, 220);
-    set(planeDisk, 'XData', px, 'YData', py, 'ZData', pz);
+    set(planeDisk, 'XData',px, 'YData',py, 'ZData',pz);
 
-    L = 0.8*Rdisk;
-    set(planeNormalArrow, 'UData', L*nhat(1), 'VData', L*nhat(2), 'WData', L*nhat(3));
+    Lp = 0.8*Rdisk;
+    set(planeNormalArrow, 'UData',Lp*nhat(1), 'VData',Lp*nhat(2), 'WData',Lp*nhat(3));
 
-    % keep overlay visible
     uistack(planeDisk,'top');
     uistack(planeNormalArrow,'top');
     uistack(orbitLine,'top');
+    if ~isempty(hSatPatchMain) && isgraphics(hSatPatchMain)
+        uistack(hSatPatchMain,'top');
+    end
 
-    % Info texts
     set(info1,'String',sprintf('%s UTC\n%s', string(dtNowUTC), stateStr));
     set(info2,'String',sprintf('%s UTC\n%s', string(dtNowUTC), stateStr));
 
@@ -452,24 +536,88 @@ end
 
 end % end main
 
-
 %% ===================== Helpers =====================
 
-function [ok, F, V] = tryLoadSTL(filename)
+function [ok, F, V] = tryLoadSTL_any(filename)
 ok = false; F = []; V = [];
+filename = char(filename);
+
+if exist('stlread','file') == 2
+    try
+        TR = stlread(filename);
+        F = TR.ConnectivityList;
+        V = TR.Points;
+        ok = ~isempty(F) && ~isempty(V);
+        return;
+    catch
+        % fallthrough
+    end
+end
+
 try
-    TR = stlread(filename);
-    F = TR.ConnectivityList;
-    V = TR.Points;
+    [F, V] = stlread_local(filename);
     ok = ~isempty(F) && ~isempty(V);
 catch
     ok = false;
 end
 end
 
+function [F, V] = stlread_local(fname)
+fid = fopen(fname,'r');
+if fid<0, error('Cannot open STL: %s', fname); end
+cleanup = onCleanup(@() fclose(fid)); %#ok<NASGU>
+
+firstLine = fgetl(fid);
+frewind(fid);
+isASCII = startsWith(strtrim(firstLine),'solid','IgnoreCase',true);
+
+if isASCII
+    [F, V] = stlread_ascii(fid);
+else
+    [F, V] = stlread_binary(fid);
+end
+end
+
+function [F,V] = stlread_binary(fid)
+fseek(fid, 80, 'bof');
+nTri = fread(fid, 1, 'uint32');
+V = zeros(3*nTri, 3);
+F = reshape(1:3*nTri, 3, []).';
+for i=1:nTri
+    fread(fid, 3, 'float32'); % normal
+    v1 = fread(fid, 3, 'float32'); v2 = fread(fid, 3, 'float32'); v3 = fread(fid, 3, 'float32');
+    V(3*i-2,:) = v1(:).';
+    V(3*i-1,:) = v2(:).';
+    V(3*i,:)   = v3(:).';
+    fread(fid, 1, 'uint16'); % attribute
+end
+[V, ~, ix] = unique(round(V,6),'rows');
+F = reshape(ix, 3, []).';
+end
+
+function [F,V] = stlread_ascii(fid)
+Vraw = [];
+frewind(fid);
+while ~feof(fid)
+    tline = strtrim(fgetl(fid));
+    if startsWith(tline,'vertex','IgnoreCase',true)
+        nums = sscanf(tline, 'vertex %f %f %f');
+        if numel(nums)==3
+            Vraw(end+1,:) = nums(:).'; %#ok<AGROW>
+        end
+    end
+end
+nV = size(Vraw,1);
+if mod(nV,3)~=0
+    error('ASCII STL parse error: vertex count not multiple of 3.');
+end
+F = reshape(1:nV,3,[]).';
+[V, ~, ix] = unique(round(Vraw,6),'rows');
+F = reshape(ix,3,[]).';
+end
+
 function Vout = normalizeModelUnitsAndCenter(Vin, unitStr)
-V = Vin;
-V = V - mean(V,1);
+V = Vin - mean(Vin,1);
 switch lower(string(unitStr))
     case "km", s = 1;
     case "m",  s = 1e-3;
@@ -513,10 +661,8 @@ if isfield(orb,'useJ2') && orb.useJ2
     a = orb.a; e = orb.e; i = deg2rad(orb.i);
     p  = a*(1-e^2);
     n  = sqrt(mu/a^3);
-
     Omegadot = -1.5*J2*(Re^2/p^2)*n*cos(i);
     omegadot =  0.75*J2*(Re^2/p^2)*n*(5*cos(i)^2 - 1);
-
     orbNow.RAAN = orb.RAAN + rad2deg(Omegadot*tSec);
     orbNow.argp = orb.argp + rad2deg(omegadot*tSec);
 end
@@ -553,7 +699,6 @@ xo = R(1,:); yo = R(2,:); zo = R(3,:);
 end
 
 function nhat = orbitNormalFromElements(orb)
-% Orbital plane unit normal in ECI using same convention as Q = R3(RAAN)*R1(i)*R3(argp)
 i = deg2rad(orb.i);
 O = deg2rad(orb.RAAN);
 nhat = [sin(i)*sin(O); -sin(i)*cos(O); cos(i)];
@@ -611,21 +756,16 @@ end
 function sHat = sunVectorECI_unit(tUTC)
 JD = juliandate(tUTC);
 T  = (JD - 2451545.0)/36525;
-
 L0 = 280.46646 + 36000.76983*T + 0.0003032*T^2;
 M  = 357.52911 + 35999.05029*T - 0.0001537*T^2;
-
 C  = (1.914602 - 0.004817*T - 0.000014*T^2)*sind(M) ...
    + (0.019993 - 0.000101*T)*sind(2*M) ...
    + 0.000289*sind(3*M);
-
 lambda = L0 + C;
 eps0   = 23.439291 - 0.0130042*T;
-
 x = cosd(lambda);
 y = cosd(eps0)*sind(lambda);
 z = sind(eps0)*sind(lambda);
-
 v = [x; y; z];
 sHat = v / norm(v);
 end
