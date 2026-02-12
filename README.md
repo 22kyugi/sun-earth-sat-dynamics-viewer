@@ -38,3 +38,7 @@ UI（スライダー）で **月 / 日 / 時刻**を直感的に操作し、任�
 - **下部スライダー**：`月 → 日 → 時刻` の順に指定し、選択した時刻にジャンプして可視化を更新します。
 
 > English (short): Left panel shows Earth’s heliocentric orbit and seasonal markers with day/night terminator. Right panel shows the satellite (STL) with instantaneous orbit curve and orbit plane at the selected date/time.
+
+## License
+
+This project is licensed under the MIT License.
